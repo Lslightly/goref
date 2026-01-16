@@ -6,6 +6,7 @@ import (
 	_ "net/http/pprof"
 	"time"
 
+	"github.com/cloudwego/goref/cmd/grf/cmds"
 	"github.com/cloudwego/goref/test/testdata/mockleak/creator"
 	"github.com/cloudwego/goref/test/testdata/mockleak/holder"
 )
@@ -17,6 +18,9 @@ func main() {
 	receiver := holder.ReceiveChan()
 	for i := 0; i < 100000; i++ {
 		receiver <- creator.Create()
+		if i == 50000 {
+			cmds.AttachSelf("grf.profile.gz")
+		}
 	}
 	time.Sleep(1 * time.Minute)
 }
