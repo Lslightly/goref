@@ -21,6 +21,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strings"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/logflags"
@@ -539,7 +540,7 @@ var loadSingleValue = proc.LoadConfig{}
 // ObjectReference scanning goroutine stack and global vars to search all heap objects they reference,
 // and outputs the reference relationship to the filename with pprof format.
 // Returns the ObjRefScope for testing purposes.
-func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
+func ObjectReference(t *proc.Target, filename string, useMarkStub bool) (*ObjRefScope, error) {
 	scope, err := proc.ThreadScope(t, t.CurrentThread())
 	if err != nil {
 		return nil, err
@@ -549,6 +550,12 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 	err = heapScope.readHeap()
 	if err != nil {
 		return nil, err
+	}
+	if useMarkStub {
+		err = heapScope.readMarkStubAddr()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	f, err := os.Create(filename)
@@ -575,6 +582,12 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 		}
 		rv := ToReferenceVariable(pv)
 		s.findRef(rv, nil)
+		if useMarkStub {
+			if strings.Contains(rv.Name, "stub.markStub") {
+				idx := (*pprofIndex)(nil).pushHead(s.pb, rv.Name)
+				s.record(idx, 1, 1)
+			}
+		}
 		rvpool.Put(rv)
 	}
 
