@@ -32,10 +32,11 @@ import (
 
 // TestScenario defines a complete test scenario
 type TestScenario struct {
-	Name     string
-	Code     string
-	Expected *MemoryNode
-	Timeout  time.Duration
+	Name        string
+	Code        string
+	Expected    *MemoryNode
+	Timeout     time.Duration
+	UseMarkStub bool
 }
 
 // TestFramework manages integration test execution
@@ -88,7 +89,7 @@ func (tf *TestFramework) runScenario(scenario TestScenario) {
 	}
 
 	outputFile := tf.tempDir + "/" + scenario.Name + ".out"
-	scope, err := tf.attachAndAnalyze(program.GetPID(), outputFile, program.Binary)
+	scope, err := tf.attachAndAnalyze(program.GetPID(), outputFile, program.Binary, scenario.UseMarkStub)
 	if err != nil {
 		tf.t.Fatalf("Failed to attach and analyze: %v", err)
 	}
@@ -128,7 +129,7 @@ func (tf *TestFramework) createTestProgram(scenario TestScenario) (*TestProgram,
 }
 
 // attachAndAnalyze attaches to the target process and analyzes references
-func (tf *TestFramework) attachAndAnalyze(pid int, outputFile, binary string) (*gorefproc.ObjRefScope, error) {
+func (tf *TestFramework) attachAndAnalyze(pid int, outputFile, binary string, useMarkStub bool) (*gorefproc.ObjRefScope, error) {
 	tf.t.Logf("Attaching to PID %d", pid)
 
 	// Create debugger config
@@ -153,7 +154,7 @@ func (tf *TestFramework) attachAndAnalyze(pid int, outputFile, binary string) (*
 	func() {
 		tg, unlock := dbg.LockTargetGroup()
 		defer unlock()
-		scope, err = gorefproc.ObjectReference(tg.Selected, outputFile)
+		scope, err = gorefproc.ObjectReference(tg.Selected, outputFile, useMarkStub)
 	}()
 	if err != nil {
 		return nil, fmt.Errorf("failed to analyze references: %w", err)
@@ -354,9 +355,13 @@ func (tf *TestFramework) buildMemoryTreeFromNodes(nodes map[string]ProfileNodeIn
 			continue // Skip empty paths
 		}
 
-		// Only include nodes from main package or system nodes for debugging
-		if strings.HasPrefix(nodePath[len(nodePath)-1], "main.") {
+		// Only include nodes from main package/system nodes/stub.markStub for debugging
+		finalPath := nodePath[len(nodePath)-1]
+		if strings.HasPrefix(finalPath, "main.") {
 			mainPackageNodes++
+			tf.createOrUpdateNode(root, nodePath, node.GetCount(), node.GetSize())
+		}
+		if strings.HasSuffix(finalPath, "stub.markStub") {
 			tf.createOrUpdateNode(root, nodePath, node.GetCount(), node.GetSize())
 		}
 	}

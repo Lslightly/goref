@@ -684,3 +684,34 @@ func main() {
 	},
 	Timeout: 30 * time.Second,
 }
+
+var MarkStubScenario = TestScenario{
+	Name: "markStub reference scenario",
+	Code: `package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/cloudwego/goref/pkg/stub"
+)
+
+func main() {
+	stubAddr := stub.GetMarkStubAddr()
+	_ = stubAddr
+	fmt.Println("READY")
+	time.Sleep(100 * time.Second)
+}
+`,
+	Expected: &MemoryNode{
+		Children: []*MemoryNode{
+			{
+				Name:  "github.com/cloudwego/goref/pkg/stub.markStub",
+				Size:  ExactValue(1),
+				Count: ExactValue(1),
+			},
+		},
+	},
+	Timeout:     30 * time.Second,
+	UseMarkStub: true,
+}

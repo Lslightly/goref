@@ -159,6 +159,9 @@ type HeapScope struct {
 
 	// for go1.24+, offset field of runtime.special type is uintptr
 	specialOffsetUintptrType uint8 // 0: not sure, 1: uintptr, 2: uint16
+
+	// stub address
+	markStubAddr Address // address for pkg/stub.markStub
 }
 
 func (s *HeapScope) readHeap() error {
@@ -652,4 +655,14 @@ func (s *HeapScope) rtConstant(name string) int64 {
 		return v
 	}
 	return 0
+}
+
+func (s *HeapScope) readMarkStubAddr() error {
+	tmp, err := s.scope.EvalExpression("stub.markStub", loadSingleValue)
+	if err != nil {
+		return err
+	}
+	markStub := toRegion(tmp, s.bi)
+	s.markStubAddr = markStub.a
+	return nil
 }
