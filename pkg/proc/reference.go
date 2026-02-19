@@ -377,7 +377,14 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex, mc markCont
 		if newmc.useMarkStub {
 			for _, field := range typ.Field {
 				if _, ok := field.Type.(*godwarf.PtrType); ok && field.Name == "markStub" {
-					newmc.enableRecord = true
+					y := x.toField(field)
+					ptrval, err := x.readPointer(y.Addr)
+					if err != nil {
+						continue
+					}
+					if ptrval == uint64(s.markStubAddr) {
+						newmc.enableRecord = true
+					}
 				}
 			}
 		}
