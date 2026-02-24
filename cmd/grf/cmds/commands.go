@@ -41,6 +41,9 @@ var (
 
 	// verbose is whether to log verbose info, like debug logs.
 	verbose bool
+
+	// useMarkStub is whether to use mark stub for object reference analysis.
+	useMarkStub bool
 )
 
 // New returns an initialized command tree.
@@ -75,6 +78,7 @@ You'll have to wait for goref until it outputs 'successfully output to ...', or 
 	}
 	attachCommand.Flags().IntVar(&maxRefDepth, "max-depth", 0, "max reference depth shown by pprof")
 	attachCommand.Flags().StringVarP(&outFile, "out", "o", "grf.out", "output file name")
+	attachCommand.Flags().BoolVar(&useMarkStub, "usemarkstub", false, "use mark stub for partial object reference analysis")
 	rootCommand.AddCommand(attachCommand)
 
 	coreCommand := &cobra.Command{
@@ -130,14 +134,14 @@ func attachCmd(_ *cobra.Command, args []string) {
 	if len(args) > 1 {
 		exeFile = args[1]
 	}
-	os.Exit(execute(pid, exeFile, "", outFile, conf))
+	os.Exit(execute(pid, exeFile, "", outFile, useMarkStub, conf))
 }
 
 func coreCmd(_ *cobra.Command, args []string) {
-	os.Exit(execute(0, args[0], args[1], outFile, conf))
+	os.Exit(execute(0, args[0], args[1], outFile, useMarkStub, conf))
 }
 
-func execute(attachPid int, exeFile, coreFile, outFile string, conf *config.Config) int {
+func execute(attachPid int, exeFile, coreFile, outFile string, useMarkStub bool, conf *config.Config) int {
 	if verbose {
 		if err := logflags.Setup(verbose, "", ""); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
