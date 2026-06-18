@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cloudwego/goref/pkg/stub"
 )
@@ -41,7 +42,8 @@ func main() {
 	}
 	runSession(s2)
 	fmt.Println("pid:", os.Getpid())
-	fmt.Scanln()
+	fmt.Println("READY")
+	time.Sleep(100 * time.Second)
 	fmt.Println(s.objs[0])
 }
 

@@ -34,6 +34,7 @@ var testCases = []TestScenario{
 	MallocHeaderHiddenTypeScenario,
 	CircularReferenceScenario,
 	MarkStubScenario,
+	StubAddrScenario,
 }
 
 // TestScenarios runs individual test scenarios using table-driven approach
