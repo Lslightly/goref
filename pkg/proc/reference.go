@@ -129,7 +129,8 @@ func (s *HeapScope) markObject(addr Address, mem proc.MemoryReadWriter, mc markC
 
 		hb := newGCBitsIterator(realBase, sp.elemEnd(base), sp.base, sp.ptrMask)
 		var cmem proc.MemoryReadWriter
-		refMarkStub := entry.enableRecord
+		stubInObj := false // whether object contains mark stub.
+		startIdx := len(stack)
 		for {
 			ptr := hb.nextPtr(true)
 			if ptr == 0 {
@@ -142,10 +143,20 @@ func (s *HeapScope) markObject(addr Address, mem proc.MemoryReadWriter, mc markC
 			if err != nil {
 				continue
 			}
-			if nptr == uint64(s.markStubAddr) {
-				refMarkStub = true
+			if mc.useMarkStub {
+				if nptr == uint64(s.markStubAddr) {
+					stubInObj = true
+				}
+				stack = append(stack, stackEntry{Address(nptr), entry.enableRecord})
+			} else {
+				stack = append(stack, stackEntry{Address(nptr), true})
 			}
-			stack = append(stack, stackEntry{Address(nptr), !mc.useMarkStub || (refMarkStub)})
+		}
+		if stubInObj {
+			// mark all objects referenced by current object
+			for i := startIdx; i < len(stack); i++ {
+				stack[i].enableRecord = true
+			}
 		}
 	}
 	return

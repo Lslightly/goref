@@ -8,8 +8,8 @@ import (
 )
 
 type Session struct {
-	markStub *bool
 	sid      int
+	markStub *bool
 	objs     []*Obj
 }
 
@@ -34,6 +34,12 @@ func main() {
 		objs:     make([]*Obj, 0, 10),
 	}
 	runSession(s)
+	s2 := &Session{
+		sid:      1,
+		markStub: nil,
+		objs:     make([]*Obj, 0, 10),
+	}
+	runSession(s2)
 	fmt.Println("pid:", os.Getpid())
 	fmt.Scanln()
 	fmt.Println(s.objs[0])

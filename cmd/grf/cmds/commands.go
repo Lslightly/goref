@@ -179,7 +179,7 @@ func execute(attachPid int, exeFile, coreFile, outFile string, useMarkStub bool,
 	func() {
 		tg, unlock := dbg.LockTargetGroup()
 		defer unlock()
-		_, err = myproc.ObjectReference(tg.Selected, outFile, true)
+		_, err = myproc.ObjectReference(tg.Selected, outFile, useMarkStub)
 	}()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())

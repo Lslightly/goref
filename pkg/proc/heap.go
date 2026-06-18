@@ -424,7 +424,7 @@ func (s *HeapScope) readBitmapFunc(heapArena *region) func(heapArena *region, mi
 	}
 }
 
-// base must be the base address of an object in then span
+// base must be the base address of an object in the span
 func (s *HeapScope) copyGCMask(sp *spanInfo, base Address) Address {
 	if !s.enableAllocHeader {
 		return base
