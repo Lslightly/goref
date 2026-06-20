@@ -11,7 +11,11 @@ package proc
 
 import (
 	"compress/gzip"
+	"fmt"
 	"io"
+	"log"
+
+	"github.com/go-delve/delve/pkg/proc"
 )
 
 // A protobuf is a simple protocol buffer encoder.
@@ -217,9 +221,11 @@ type profileBuilder struct {
 	w  io.Writer
 	zw *gzip.Writer
 
-	pb        protobuf
-	strings   []string
-	stringMap map[string]int
+	pb           protobuf
+	strings      []string
+	stringMap    map[string]int
+	funcID       uint64
+	stkStrIdxMap map[uint64]*pprofIndex
 
 	// key: indexes, val: *profileNode
 	nodes map[string]*profileNode
@@ -247,11 +253,13 @@ func (n *profileNode) GetSize() int64 {
 func newProfileBuilder(w io.Writer) *profileBuilder {
 	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
 	b := &profileBuilder{
-		w:         w,
-		zw:        zw,
-		strings:   []string{""},
-		stringMap: map[string]int{"": 0},
-		nodes:     make(map[string]*profileNode),
+		w:            w,
+		zw:           zw,
+		strings:      []string{""},
+		stringMap:    map[string]int{"": 0},
+		funcID:       5,
+		stkStrIdxMap: make(map[uint64]*pprofIndex),
+		nodes:        make(map[string]*profileNode),
 	}
 	b.pbValueType(tagProfile_SampleType, "inuse_objects", "count")
 	b.pbValueType(tagProfile_SampleType, "inuse_space", "bytes")
@@ -319,23 +327,28 @@ func (b *profileBuilder) pbMapping(tag int, id, base, limit, offset uint64, file
 	b.pb.endMessage(tag, start)
 }
 
+const dummyMappingID = uint64(1)
+
 func (b *profileBuilder) flush() {
-	b.flushReference()
-	const dummyMappingID = uint64(1)
 	for i := uint64(5); i < uint64(len(b.strings)); i++ {
+		if _, ok := b.stkStrIdxMap[i]; ok {
+			continue
+		}
 		// write location
 		start := b.pb.startMessage()
 		b.pb.uint64Opt(tagLocation_ID, i)
 		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
-		b.pbLine(tagLocation_Line, i, 0)
+		b.pbLine(tagLocation_Line, b.funcID, 0)
 		b.pb.endMessage(tagProfile_Location, start)
 
 		// write function
 		start = b.pb.startMessage()
-		b.pb.uint64Opt(tagFunction_ID, i)
+		b.pb.uint64Opt(tagFunction_ID, b.funcID)
 		b.pb.int64Opt(tagFunction_Name, int64(i))
 		b.pb.endMessage(tagProfile_Function, start)
+		b.funcID++
 	}
+	b.flushReference()
 	// just avoid error msg from pprof tool
 	b.pbMapping(tagProfile_Mapping, dummyMappingID, uint64(0), uint64(0xff), 0, "-", "", false)
 	b.pb.strings(tagProfile_StringTable, b.strings)
@@ -343,10 +356,78 @@ func (b *profileBuilder) flush() {
 	b.zw.Close()
 }
 
+func (b *profileBuilder) pbFunc(name, systemName, fileName string, startLine int64) uint64 {
+	funcID := b.funcID
+	b.funcID++
+	start := b.pb.startMessage()
+	b.pb.uint64Opt(tagFunction_ID, funcID)
+	b.pb.int64Opt(tagFunction_Name, b.stringIndex(name))
+	if systemName != "" {
+		b.pb.int64Opt(tagFunction_SystemName, b.stringIndex(systemName))
+	}
+	if fileName != "" {
+		b.pb.int64Opt(tagFunction_Filename, b.stringIndex(fileName))
+	}
+	if startLine != 0 {
+		b.pb.int64Opt(tagFunction_StartLine, startLine)
+	}
+	b.pb.endMessage(tagProfile_Function, start)
+	return funcID
+}
+
 type pprofIndex struct {
 	idx   uint64
 	prev  *pprofIndex
 	depth int
+}
+
+func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g *proc.G) *pprofIndex {
+	if len(sf) == 0 {
+		log.Panicf("unable to create pprofIndex for len == 0 stacktrace")
+	}
+	var prev *pprofIndex = &pprofIndex{ // the top frame is Goroutine ID
+		idx:  uint64(b.stringIndex(fmt.Sprintf("G%d", g.ID))),
+		prev: nil,
+	}
+	for i := len(sf) - 1; i >= 0; i-- {
+		currentFn := sf[i].Current.Fn
+		idx := uint64(b.stringIndex(currentFn.Name))
+		cur, ok := b.stkStrIdxMap[idx]
+		if ok {
+			prev = cur
+			continue
+		}
+
+		_, startLine, _ := t.BinInfo().PCToLine(currentFn.Entry)
+		funcid := b.pbFunc(currentFn.Name, currentFn.Name, sf[i].Current.File, int64(startLine))
+		var inlinefuncid uint64
+		if sf[i].Inlined {
+			inlinefuncid = b.pbFunc(sf[i].Call.Fn.Name, sf[i].Call.Fn.Name, sf[i].Call.File, tagFunction_StartLine)
+		}
+		// write location
+		start := b.pb.startMessage()
+		b.pb.uint64Opt(tagLocation_ID, idx)
+		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
+		b.pb.uint64Opt(tagLocation_Address, sf[i].Current.PC)
+		b.pbLine(tagLocation_Line, funcid, int64(sf[i].Current.Line))
+		if sf[i].Inlined {
+			b.pbLine(tagLocation_Line, inlinefuncid, int64(sf[i].Call.Line))
+		}
+		b.pb.endMessage(tagProfile_Location, start)
+
+		cur = &pprofIndex{
+			idx:  idx,
+			prev: prev,
+		}
+		if prev == nil {
+			cur.depth = 0
+		} else {
+			cur.depth = prev.depth + 1
+		}
+		b.stkStrIdxMap[idx] = cur
+		prev = cur
+	}
+	return prev
 }
 
 func (i *pprofIndex) pushHead(pb *profileBuilder, name string) *pprofIndex {

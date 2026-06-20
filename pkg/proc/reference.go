@@ -555,6 +555,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
 	s := &ObjRefScope{
 		HeapScope: heapScope,
@@ -608,7 +609,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 					}
 					l.Name = sf[i].Current.Fn.Name + "." + l.Name
 					rv := ToReferenceVariable(l)
-					s.findRef(rv, nil)
+					s.findRef(rv, createStackTrace(s.pb, sf[i:], t, gr))
 					rvpool.Put(rv)
 				}
 			}
