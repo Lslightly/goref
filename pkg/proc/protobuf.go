@@ -221,11 +221,11 @@ type profileBuilder struct {
 	w  io.Writer
 	zw *gzip.Writer
 
-	pb           protobuf
-	strings      []string
-	stringMap    map[string]int
-	funcID       uint64
-	stkStrIdxMap map[uint64]*pprofIndex
+	pb                protobuf
+	strings           []string
+	stringMap         map[string]int
+	funcID            uint64
+	funcNameStrIdxSet map[uint64]bool
 
 	// key: indexes, val: *profileNode
 	nodes map[string]*profileNode
@@ -253,13 +253,13 @@ func (n *profileNode) GetSize() int64 {
 func newProfileBuilder(w io.Writer) *profileBuilder {
 	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
 	b := &profileBuilder{
-		w:            w,
-		zw:           zw,
-		strings:      []string{""},
-		stringMap:    map[string]int{"": 0},
-		funcID:       5,
-		stkStrIdxMap: make(map[uint64]*pprofIndex),
-		nodes:        make(map[string]*profileNode),
+		w:                 w,
+		zw:                zw,
+		strings:           []string{""},
+		stringMap:         map[string]int{"": 0},
+		funcID:            5,
+		funcNameStrIdxSet: make(map[uint64]bool),
+		nodes:             make(map[string]*profileNode),
 	}
 	b.pbValueType(tagProfile_SampleType, "inuse_objects", "count")
 	b.pbValueType(tagProfile_SampleType, "inuse_space", "bytes")
@@ -331,7 +331,7 @@ const dummyMappingID = uint64(1)
 
 func (b *profileBuilder) flush() {
 	for i := uint64(5); i < uint64(len(b.strings)); i++ {
-		if _, ok := b.stkStrIdxMap[i]; ok {
+		if _, ok := b.funcNameStrIdxSet[i]; ok {
 			continue
 		}
 		// write location
@@ -386,45 +386,35 @@ func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g
 		log.Panicf("unable to create pprofIndex for len == 0 stacktrace")
 	}
 	var prev *pprofIndex = &pprofIndex{ // the top frame is Goroutine ID
-		idx:  uint64(b.stringIndex(fmt.Sprintf("G%d", g.ID))),
-		prev: nil,
+		idx:   uint64(b.stringIndex(fmt.Sprintf("G%d", g.ID))),
+		prev:  nil,
+		depth: 0,
 	}
 	for i := len(sf) - 1; i >= 0; i-- {
 		currentFn := sf[i].Current.Fn
-		idx := uint64(b.stringIndex(currentFn.Name))
-		cur, ok := b.stkStrIdxMap[idx]
-		if ok {
-			prev = cur
-			continue
+		cur := prev.pushHead(b, currentFn.Name)
+		idx := cur.idx
+		if _, ok := b.funcNameStrIdxSet[idx]; !ok {
+			// Do following things if function appears for the first time
+			// write function
+			_, startLine, _ := t.BinInfo().PCToLine(currentFn.Entry)
+			funcid := b.pbFunc(currentFn.Name, currentFn.Name, sf[i].Current.File, int64(startLine))
+			var inlinefuncid uint64
+			if sf[i].Inlined {
+				inlinefuncid = b.pbFunc(sf[i].Call.Fn.Name, sf[i].Call.Fn.Name, sf[i].Call.File, tagFunction_StartLine)
+			}
+			// write location
+			start := b.pb.startMessage()
+			b.pb.uint64Opt(tagLocation_ID, idx)
+			b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
+			b.pb.uint64Opt(tagLocation_Address, sf[i].Current.PC)
+			b.pbLine(tagLocation_Line, funcid, int64(sf[i].Current.Line))
+			if sf[i].Inlined {
+				b.pbLine(tagLocation_Line, inlinefuncid, int64(sf[i].Call.Line))
+			}
+			b.pb.endMessage(tagProfile_Location, start)
+			b.funcNameStrIdxSet[idx] = true
 		}
-
-		_, startLine, _ := t.BinInfo().PCToLine(currentFn.Entry)
-		funcid := b.pbFunc(currentFn.Name, currentFn.Name, sf[i].Current.File, int64(startLine))
-		var inlinefuncid uint64
-		if sf[i].Inlined {
-			inlinefuncid = b.pbFunc(sf[i].Call.Fn.Name, sf[i].Call.Fn.Name, sf[i].Call.File, tagFunction_StartLine)
-		}
-		// write location
-		start := b.pb.startMessage()
-		b.pb.uint64Opt(tagLocation_ID, idx)
-		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
-		b.pb.uint64Opt(tagLocation_Address, sf[i].Current.PC)
-		b.pbLine(tagLocation_Line, funcid, int64(sf[i].Current.Line))
-		if sf[i].Inlined {
-			b.pbLine(tagLocation_Line, inlinefuncid, int64(sf[i].Call.Line))
-		}
-		b.pb.endMessage(tagProfile_Location, start)
-
-		cur = &pprofIndex{
-			idx:  idx,
-			prev: prev,
-		}
-		if prev == nil {
-			cur.depth = 0
-		} else {
-			cur.depth = prev.depth + 1
-		}
-		b.stkStrIdxMap[idx] = cur
 		prev = cur
 	}
 	return prev
