@@ -165,6 +165,8 @@ type HeapScope struct {
 	greenTeaGCEnabled      bool
 	spanInlineMarkBitsSize int64
 	inlineMarkSpanPages    map[Address]struct{}
+	// stub address
+	markStubAddr Address // address for pkg/stub.markStub
 }
 
 func (s *HeapScope) readHeap() error {
@@ -422,7 +424,7 @@ func (s *HeapScope) readBitmapFunc(heapArena *region) func(heapArena *region, mi
 	}
 }
 
-// base must be the base address of an object in then span
+// base must be the base address of an object in the span
 func (s *HeapScope) copyGCMask(sp *spanInfo, base Address) Address {
 	if !s.enableAllocHeader {
 		return base
@@ -865,4 +867,14 @@ func (s *HeapScope) rtConstant(name string) int64 {
 		return v
 	}
 	return 0
+}
+
+func (s *HeapScope) readMarkStubAddr() error {
+	tmp, err := s.scope.EvalExpression("stub.markStub", loadSingleValue)
+	if err != nil {
+		return err
+	}
+	markStub := toRegion(tmp, s.bi)
+	s.markStubAddr = markStub.a
+	return nil
 }

@@ -14,7 +14,10 @@
 
 package test
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // LocalStringScenario tests local string allocation
 var LocalStringScenario = TestScenario{
@@ -808,4 +811,143 @@ func main() {
 		},
 	},
 	Timeout: 30 * time.Second,
+}
+
+var MarkStubScenario = TestScenario{
+	Name: "markStub reference scenario",
+	Code: `package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/cloudwego/goref/pkg/stub"
+)
+
+func main() {
+	stubAddr := stub.GetMarkStubAddr()
+	_ = stubAddr
+	fmt.Println("READY")
+	time.Sleep(100 * time.Second)
+}
+`,
+	Expected: &MemoryNode{
+		Children: []*MemoryNode{
+			{
+				Name:  "github.com/cloudwego/goref/pkg/stub.markStub",
+				Size:  ExactValue(1),
+				Count: ExactValue(1),
+			},
+		},
+	},
+	Timeout:     30 * time.Second,
+	UseMarkStub: true,
+}
+
+var StubAddrScenario = TestScenario{
+	Name: "stub address reference scenario",
+	Code: `package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/cloudwego/goref/pkg/stub"
+)
+
+type Session struct {
+	sid      int
+	markStub *bool
+	objs     []*Obj
+}
+
+type Obj struct {
+	data [30]int
+}
+
+func (obj *Obj) do() int {
+	sum := 0
+	for _, elem := range obj.data {
+		sum += elem
+	}
+	return sum
+}
+
+func main() {
+	var markStub *bool = nil
+	markStub = stub.GetMarkStubAddr()
+	s := &Session{
+		markStub: markStub,
+		sid:      0,
+		objs:     make([]*Obj, 0, 10),
+	}
+	runSession(s)
+	s2 := &Session{
+		sid:      1,
+		markStub: nil,
+		objs:     make([]*Obj, 0, 10),
+	}
+	runSession(s2)
+	fmt.Println("READY")
+	time.Sleep(100 * time.Second)
+	fmt.Println(s.objs[0])
+}
+
+func runSession(s *Session) {
+	for i := range 10 {
+		if i%5 == 0 {
+			s.objs = append(s.objs, nil)
+			continue
+		}
+		obj := Obj{}
+		for j := i; j < i+30; j++ {
+			obj.data[j-i] = j
+		}
+		s.objs = append(s.objs, &obj)
+	}
+	for _, obj := range s.objs {
+		if obj != nil {
+			fmt.Println("sid:", s.sid, "do:", obj.do())
+		}
+	}
+}`,
+	Expected: &MemoryNode{
+		Children: []*MemoryNode{
+			{
+				Name:  "main.main.s",
+				Size:  nil,
+				Count: nil,
+				Children: []*MemoryNode{
+					{
+						Name:     "objs",
+						Size:     ExactValue(80),
+						Count:    ExactValue(1),
+						Children: stubAddrArrayElem(),
+					},
+				},
+			},
+			{
+				Name:  "github.com/cloudwego/goref/pkg/stub.markStub",
+				Size:  ExactValue(1),
+				Count: ExactValue(1),
+			},
+		},
+	},
+	Timeout:     30 * time.Second,
+	UseMarkStub: true,
+}
+
+func stubAddrArrayElem() []*MemoryNode {
+	res := make([]*MemoryNode, 0, 8)
+	for i := range 10 {
+		if i%5 == 0 {
+			continue
+		}
+		res = append(res, &MemoryNode{
+			Name:  fmt.Sprintf("[%d]", i),
+			Size:  ExactValue(240),
+			Count: ExactValue(1),
+		})
+	}
+	return res
 }

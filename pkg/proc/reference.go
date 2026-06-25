@@ -21,6 +21,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strings"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/logflags"
@@ -99,12 +100,13 @@ func (s *ObjRefScope) findObject(addr Address, typ godwarf.Type, mem proc.Memory
 	return
 }
 
-func (s *HeapScope) markObject(addr Address, mem proc.MemoryReadWriter) (size, count int64) {
+func (s *HeapScope) markObject(addr Address, mem proc.MemoryReadWriter, mc markContext) (size, count int64) {
 	type stackEntry struct {
-		addr Address
+		addr         Address
+		enableRecord bool
 	}
 	var stack []stackEntry
-	stack = append(stack, stackEntry{addr})
+	stack = append(stack, stackEntry{addr, !mc.useMarkStub || mc.enableRecord})
 
 	for len(stack) > 0 {
 		entry := stack[len(stack)-1]
@@ -120,11 +122,15 @@ func (s *HeapScope) markObject(addr Address, mem proc.MemoryReadWriter) (size, c
 			continue // already found
 		}
 		realBase := s.copyGCMask(sp, base)
-		size += sp.elemSize
-		count++
+		if entry.enableRecord {
+			size += sp.elemSize
+			count++
+		}
 
 		hb := newGCBitsIterator(realBase, sp.elemEnd(base), sp.base, sp.ptrMask)
 		var cmem proc.MemoryReadWriter
+		stubInObj := false // whether object contains mark stub.
+		startIdx := len(stack)
 		for {
 			ptr := hb.nextPtr(true)
 			if ptr == 0 {
@@ -137,7 +143,20 @@ func (s *HeapScope) markObject(addr Address, mem proc.MemoryReadWriter) (size, c
 			if err != nil {
 				continue
 			}
-			stack = append(stack, stackEntry{Address(nptr)})
+			if mc.useMarkStub {
+				if nptr == uint64(s.markStubAddr) {
+					stubInObj = true
+				}
+				stack = append(stack, stackEntry{Address(nptr), entry.enableRecord})
+			} else {
+				stack = append(stack, stackEntry{Address(nptr), true})
+			}
+		}
+		if stubInObj {
+			// mark all objects referenced by current object
+			for i := startIdx; i < len(stack); i++ {
+				stack[i].enableRecord = true
+			}
 		}
 	}
 	return
@@ -185,7 +204,7 @@ func (s *ObjRefScope) readFuncValueInfo(addr Address, mem proc.MemoryReadWriter)
 	return s.readClosureInfo(Address(closureAddr), proc.DereferenceMemory(mem))
 }
 
-func (s *ObjRefScope) scanClosureInfo(x *ReferenceVariable, info *funcValueInfo, mem proc.MemoryReadWriter, idx *pprofIndex) {
+func (s *ObjRefScope) scanClosureInfo(x *ReferenceVariable, info *funcValueInfo, mem proc.MemoryReadWriter, idx *pprofIndex, mc markContext) {
 	if info == nil || info.closureAddr == 0 {
 		return
 	}
@@ -198,17 +217,17 @@ func (s *ObjRefScope) scanClosureInfo(x *ReferenceVariable, info *funcValueInfo,
 		if info.name != "" {
 			closure.Name = info.name
 		}
-		_ = s.findRef(closure, idx)
+		_ = s.findRef(closure, idx, mc)
 		x.size += closure.size
 		x.count += closure.count
 		rvpool.Put(closure)
 	}
 }
 
-func (s *ObjRefScope) scanIndirectFuncValue(x *ReferenceVariable, addr Address, mem proc.MemoryReadWriter, idx *pprofIndex) bool {
+func (s *ObjRefScope) scanIndirectFuncValue(x *ReferenceVariable, addr Address, mem proc.MemoryReadWriter, idx *pprofIndex, mc markContext) bool {
 	if info, err := s.readFuncValueInfo(addr, mem); err == nil && info != nil && info.name != "" {
 		if y := s.findObject(addr, new(godwarf.FuncType), mem); y != nil {
-			_ = s.findRef(y, idx)
+			_ = s.findRef(y, idx, mc)
 			x.size += y.size
 			x.count += y.count
 			rvpool.Put(y)
@@ -216,13 +235,13 @@ func (s *ObjRefScope) scanIndirectFuncValue(x *ReferenceVariable, addr Address, 
 		return true
 	}
 	if info, err := s.readClosureInfo(addr, mem); err == nil && info != nil && info.name != "" {
-		s.scanClosureInfo(x, info, mem, idx)
+		s.scanClosureInfo(x, info, mem, idx, mc)
 		return true
 	}
 	return false
 }
 
-func (s *ObjRefScope) scanFuncValue(x *ReferenceVariable, idx *pprofIndex) error {
+func (s *ObjRefScope) scanFuncValue(x *ReferenceVariable, idx *pprofIndex, mc markContext) error {
 	if _, err := x.readPointer(x.Addr); err != nil {
 		return err
 	}
@@ -230,11 +249,16 @@ func (s *ObjRefScope) scanFuncValue(x *ReferenceVariable, idx *pprofIndex) error
 	if err != nil || info == nil || info.closureAddr == 0 {
 		return err
 	}
-	s.scanClosureInfo(x, info, proc.DereferenceMemory(x.mem), idx)
+	s.scanClosureInfo(x, info, proc.DereferenceMemory(x.mem), idx, mc)
 	return nil
 }
 
-func (s *ObjRefScope) finalMark(idx *pprofIndex, hb *gcMaskBitIterator) {
+type markContext struct {
+	useMarkStub  bool
+	enableRecord bool
+}
+
+func (s *ObjRefScope) finalMark(idx *pprofIndex, hb *gcMaskBitIterator, mc markContext) {
 	var ptr Address
 	var size, count int64
 	var cmem proc.MemoryReadWriter
@@ -250,7 +274,7 @@ func (s *ObjRefScope) finalMark(idx *pprofIndex, hb *gcMaskBitIterator) {
 		if err != nil {
 			continue
 		}
-		size_, count_ := s.markObject(Address(ptr), cmem)
+		size_, count_ := s.markObject(Address(ptr), cmem, mc)
 		size += size_
 		count += count_
 	}
@@ -258,7 +282,7 @@ func (s *ObjRefScope) finalMark(idx *pprofIndex, hb *gcMaskBitIterator) {
 }
 
 // findRef finds sub refs of x, and records them to pprof buffer.
-func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error) {
+func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex, mc markContext) (err error) {
 	if x.Name != "" {
 		if idx != nil && idx.depth >= maxRefDepth {
 			// No scan for depth >= maxRefDepth, as it could lead to uncontrollable reference chain depths.
@@ -267,7 +291,9 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 		}
 		// For array elem / map kv / struct field type, record them.
 		idx = idx.pushHead(s.pb, x.Name)
-		defer func() { s.record(idx, x.size, x.count) }()
+		if !mc.useMarkStub || mc.enableRecord {
+			defer func() { s.record(idx, x.size, x.count) }()
+		}
 	} else {
 		// For newly found heap objects, check if all pointers have been scanned by the DWARF searching.
 		defer func() {
@@ -285,7 +311,7 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 			return
 		}
 		if y := s.findObject(Address(ptrval), godwarf.ResolveTypedef(typ.Type), proc.DereferenceMemory(x.mem)); y != nil {
-			_ = s.findRef(y, idx)
+			_ = s.findRef(y, idx, mc)
 			// flatten reference
 			x.size += y.size
 			x.count += y.count
@@ -318,7 +344,7 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 				}
 			}
 			if z := s.findObject(Address(zptrval), fakeArrayType(chanLen, typ.ElemType), y.mem); z != nil {
-				_ = s.findRef(z, idx)
+				_ = s.findRef(z, idx, mc)
 				x.size += z.size
 				x.count += z.count
 				rvpool.Put(z)
@@ -339,7 +365,7 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 					// find key ref
 					if key := it.key(); key != nil {
 						key.Name = "$mapkey. (" + key.RealType.String() + ")"
-						if err := s.findRef(key, idx); errors.Is(err, errOutOfRange) {
+						if err := s.findRef(key, idx, mc); errors.Is(err, errOutOfRange) {
 							continue
 						}
 						rvpool.Put(key)
@@ -347,7 +373,7 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 					// find val ref
 					if val := it.value(); val != nil {
 						val.Name = "$mapval. (" + val.RealType.String() + ")"
-						if err := s.findRef(val, idx); errors.Is(err, errOutOfRange) {
+						if err := s.findRef(val, idx, mc); errors.Is(err, errOutOfRange) {
 							continue
 						}
 						rvpool.Put(val)
@@ -375,7 +401,7 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 			return
 		}
 		if y := s.findObject(Address(strAddr), fakeArrayType(strLen, &godwarf.UintType{BasicType: godwarf.BasicType{CommonType: godwarf.CommonType{ByteSize: 1, Name: "byte", ReflectKind: reflect.Uint8}, BitSize: 8, BitOffset: 0}}), proc.DereferenceMemory(x.mem)); y != nil {
-			_ = s.findRef(y, idx)
+			_ = s.findRef(y, idx, mc)
 			x.size += y.size
 			x.count += y.count
 			rvpool.Put(y)
@@ -394,7 +420,7 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 			}
 		}
 		if y := s.findObject(Address(base), fakeArrayType(cap_, typ.ElemType), proc.DereferenceMemory(x.mem)); y != nil {
-			_ = s.findRef(y, idx)
+			_ = s.findRef(y, idx, mc)
 			x.size += y.size
 			x.count += y.count
 			rvpool.Put(y)
@@ -427,23 +453,38 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 		}
 		rvpool.Put(data)
 		mem := proc.DereferenceMemory(x.mem)
-		if s.scanIndirectFuncValue(x, Address(ptrval), mem, idx) {
+		if s.scanIndirectFuncValue(x, Address(ptrval), mem, idx, mc) {
 			return
 		}
 		if ityp == nil {
 			ityp = new(godwarf.VoidType)
 		}
 		if y := s.findObject(Address(ptrval), ityp, mem); y != nil {
-			_ = s.findRef(y, idx)
+			_ = s.findRef(y, idx, mc)
 			x.size += y.size
 			x.count += y.count
 			rvpool.Put(y)
 		}
 	case *godwarf.StructType:
 		typ = s.specialStructTypes(typ)
+		newmc := mc
+		if newmc.useMarkStub {
+			for _, field := range typ.Field {
+				if _, ok := field.Type.(*godwarf.PtrType); ok && field.Name == "markStub" {
+					y := x.toField(field)
+					ptrval, err := x.readPointer(y.Addr)
+					if err != nil {
+						continue
+					}
+					if ptrval == uint64(s.markStubAddr) {
+						newmc.enableRecord = true
+					}
+				}
+			}
+		}
 		for _, field := range typ.Field {
 			y := x.toField(field)
-			err = s.findRef(y, idx)
+			err = s.findRef(y, idx, newmc)
 			rvpool.Put(y)
 			if errors.Is(err, errOutOfRange) {
 				break
@@ -456,17 +497,17 @@ func (s *ObjRefScope) findRef(x *ReferenceVariable, idx *pprofIndex) (err error)
 		}
 		for i := int64(0); i < typ.Count; i++ {
 			y := x.arrayAccess(i)
-			err = s.findRef(y, idx)
+			err = s.findRef(y, idx, mc)
 			rvpool.Put(y)
 			if errors.Is(err, errOutOfRange) {
 				break
 			}
 		}
 	case *godwarf.FuncType:
-		err = s.scanFuncValue(x, idx)
+		err = s.scanFuncValue(x, idx, mc)
 	case *finalizePtrType:
 		if y := s.findObject(x.Addr, new(godwarf.VoidType), x.mem); y != nil {
-			_ = s.findRef(y, idx)
+			_ = s.findRef(y, idx, mc)
 			x.size += y.size
 			x.count += y.count
 			rvpool.Put(y)
@@ -539,7 +580,7 @@ var loadSingleValue = proc.LoadConfig{}
 // ObjectReference scanning goroutine stack and global vars to search all heap objects they reference,
 // and outputs the reference relationship to the filename with pprof format.
 // Returns the ObjRefScope for testing purposes.
-func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
+func ObjectReference(t *proc.Target, filename string, useMarkStub bool) (*ObjRefScope, error) {
 	scope, err := proc.ThreadScope(t, t.CurrentThread())
 	if err != nil {
 		return nil, err
@@ -549,6 +590,12 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 	err = heapScope.readHeap()
 	if err != nil {
 		return nil, err
+	}
+	if useMarkStub {
+		err = heapScope.readMarkStubAddr()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	f, err := os.Create(filename)
@@ -575,7 +622,13 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 			continue
 		}
 		rv := ToReferenceVariable(pv)
-		s.findRef(rv, nil)
+		s.findRef(rv, nil, markContext{useMarkStub: useMarkStub, enableRecord: false})
+		if useMarkStub {
+			if strings.Contains(rv.Name, "stub.markStub") {
+				idx := (*pprofIndex)(nil).pushHead(s.pb, rv.Name)
+				s.record(idx, 1, 1)
+			}
+		}
 		rvpool.Put(rv)
 	}
 
@@ -609,7 +662,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 					}
 					l.Name = sf[i].Current.Fn.Name + "." + l.Name
 					rv := ToReferenceVariable(l)
-					s.findRef(rv, createStackTrace(s.pb, sf[i:], t, gr))
+					s.findRef(rv, createStackTrace(s.pb, sf[i:], t, gr), markContext{useMarkStub: useMarkStub, enableRecord: false})
 					rvpool.Put(rv)
 				}
 			}
@@ -622,24 +675,24 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 	for _, fin := range heapScope.finalizers {
 		// scan object
 		rv := newReferenceVariable(fin.p, "runtime.SetFinalizer.obj", new(finalizePtrType), s.mem, nil)
-		s.findRef(rv, nil)
+		s.findRef(rv, nil, markContext{useMarkStub: useMarkStub, enableRecord: false})
 		rvpool.Put(rv)
 		// scan finalizer
 		rv = newReferenceVariable(fin.fn, "runtime.SetFinalizer.fn", new(godwarf.FuncType), s.mem, nil)
-		s.findRef(rv, nil)
+		s.findRef(rv, nil, markContext{useMarkStub: useMarkStub, enableRecord: false})
 		rvpool.Put(rv)
 	}
 	// Cleanups
 	for _, clu := range heapScope.cleanups {
 		// scan cleanup
 		rv := newReferenceVariable(clu.fn, "runtime.AddCleanup.fn", new(godwarf.FuncType), s.mem, nil)
-		s.findRef(rv, nil)
+		s.findRef(rv, nil, markContext{useMarkStub: useMarkStub, enableRecord: false})
 		rvpool.Put(rv)
 	}
 
 	// final mark with gc mask bits
 	for _, param := range s.finalMarks {
-		s.finalMark(param.idx, param.hb)
+		s.finalMark(param.idx, param.hb, markContext{useMarkStub: useMarkStub, enableRecord: false})
 	}
 	s.finalMarks = nil
 
@@ -652,7 +705,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 				for j := len(g.frames) - 1; j >= i; j-- {
 					idx = idx.pushHead(s.pb, g.frames[j].funcName)
 				}
-				s.finalMark(idx, it)
+				s.finalMark(idx, it, markContext{useMarkStub: useMarkStub, enableRecord: false})
 			}
 		}
 	}
@@ -662,14 +715,14 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 		it := &(seg.gcMaskBitIterator)
 		if it.nextPtr(false) != 0 {
 			idx := (*pprofIndex)(nil).pushHead(s.pb, fmt.Sprintf("bss segment[%d]", i))
-			s.finalMark(idx, it)
+			s.finalMark(idx, it, markContext{useMarkStub: useMarkStub, enableRecord: false})
 		}
 	}
 	for i, seg := range s.data {
 		it := &(seg.gcMaskBitIterator)
 		if it.nextPtr(false) != 0 {
 			idx := (*pprofIndex)(nil).pushHead(s.pb, fmt.Sprintf("data segment[%d]", i))
-			s.finalMark(idx, it)
+			s.finalMark(idx, it, markContext{useMarkStub: useMarkStub, enableRecord: false})
 		}
 	}
 
