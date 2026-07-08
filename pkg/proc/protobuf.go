@@ -350,7 +350,7 @@ func (b *profileBuilder) flush() {
 	}
 	b.flushReference()
 	// just avoid error msg from pprof tool
-	b.pbMapping(tagProfile_Mapping, dummyMappingID, uint64(0), uint64(0xff), 0, "-", "", false)
+	b.pbMapping(tagProfile_Mapping, dummyMappingID, uint64(0), uint64(0xff), 0, "", "", false)
 	b.pb.strings(tagProfile_StringTable, b.strings)
 	b.zw.Write(b.pb.data)
 	b.zw.Close()
@@ -380,6 +380,8 @@ type pprofIndex struct {
 	prev  *pprofIndex
 	depth int
 }
+
+const StackTraceObjSplitLine string = "stk_obj_split"
 
 func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g *proc.G) *pprofIndex {
 	if len(sf) == 0 {
@@ -416,6 +418,18 @@ func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g
 			b.funcNameStrIdxSet[idx] = true
 		}
 		prev = cur
+	}
+	// add stk_obj_split to separate the stack trace of object reference from the stack trace of goroutine
+	prev = prev.pushHead(b, StackTraceObjSplitLine)
+	idx := prev.idx
+	if _, ok := b.funcNameStrIdxSet[idx]; !ok {
+		funcid := b.pbFunc(StackTraceObjSplitLine, StackTraceObjSplitLine, "", 0)
+		start := b.pb.startMessage()
+		b.pb.uint64Opt(tagLocation_ID, idx)
+		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
+		b.pbLine(tagLocation_Line, funcid, 0)
+		b.pb.endMessage(tagProfile_Location, start)
+		b.funcNameStrIdxSet[idx] = true
 	}
 	return prev
 }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -376,11 +377,16 @@ func (tf *TestFramework) buildMemoryTreeFromNodes(nodes map[string]ProfileNodeIn
 			continue // Skip empty paths
 		}
 
-		leaf := nodePath[len(nodePath)-1]
+		leafIdx := len(nodePath) - 1
+		// omit stacktrace if exists, and use the last node before the stacktrace as the leaf node
+		if idx := slices.Index(nodePath, gorefproc.StackTraceObjSplitLine); idx != -1 {
+			leafIdx = idx - 1
+		}
+		leaf := nodePath[leafIdx]
 		for _, prefix := range rootPrefixes {
 			if strings.HasPrefix(leaf, prefix) {
-				matchedRootNodes++
-				tf.createOrUpdateNode(root, nodePath, node.GetCount(), node.GetSize())
+				matchedRootNodes++ // only objects whose name starts with the specified root prefixes are counted
+				tf.createOrUpdateNode(root, nodePath[:leafIdx+1], node.GetCount(), node.GetSize())
 				break
 			}
 		}
