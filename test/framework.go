@@ -34,16 +34,19 @@ import (
 
 // TestScenario defines a complete test scenario
 type TestScenario struct {
-	Name     string
-	Code     string
-	Expected *MemoryNode
-	Timeout  time.Duration
+	Name               string
+	Code               string
+	Expected           *MemoryNode
+	ExpectedStackTrace *StackTraceNode
+	Timeout            time.Duration
 	// RootPrefixes limits tree roots to nodes whose leaf name has one of these prefixes.
 	// If empty, the framework defaults to []string{"main."}.
 	RootPrefixes []string
 	// AllowExtraChildren relaxes strict tree matching by allowing actual nodes
 	// to have children not listed in Expected.
 	AllowExtraChildren bool
+	// MatchStackTraceExactly enforces strict stack trace matching, requiring the actual stack trace to match the expected one exactly.
+	MatchStackTraceExactly bool
 }
 
 // TestFramework manages integration test execution
@@ -187,10 +190,16 @@ func (tf *TestFramework) validateResults(scope *gorefproc.ObjRefScope, scenario 
 		nodeInterfaces[k] = ProfileNodeInterface(v)
 	}
 	actualNode := tf.buildMemoryTreeFromNodes(nodeInterfaces, stringTable, scenario.RootPrefixes)
+	actualStackTrace := tf.buildStackTraceFromNodes(nodeInterfaces, stringTable)
 
 	// Compare nodes
 	if err := tf.compareNodes(scenario.Expected, actualNode, scenario.AllowExtraChildren); err != nil {
 		return fmt.Errorf("node comparison failed: %v", err)
+	}
+
+	// Compare stacktrace
+	if err := tf.compareStackTraceNodes(scenario.ExpectedStackTrace, actualStackTrace, true); err != nil {
+		return fmt.Errorf("stacktrace comparison failed: %v", err)
 	}
 
 	tf.t.Logf("  ✓ Memory node validation passed")
@@ -267,7 +276,64 @@ func (tf *TestFramework) compareNodes(expected, actual *MemoryNode, allowExtraCh
 	return nil
 }
 
-func sortedNodeNames(children map[string]*MemoryNode) []string {
+func (tf *TestFramework) compareStackTraceNodes(expected, actual *StackTraceNode, allowExtraStackTraceChildren bool) error {
+	if expected == nil {
+		if actual == nil {
+			return nil
+		}
+		if allowExtraStackTraceChildren {
+			return nil
+		}
+	}
+	if actual == nil {
+		tf.t.Logf("  ✗ StackTrace mismatch: expected %v, actual <nil>", expected)
+		return fmt.Errorf("stacktrace mismatch, actual is nil when expected is %v", expected.FuncName)
+	}
+	if expected.FuncName != actual.FuncName {
+		tf.t.Logf("  ✗ StackTrace FuncName mismatch: expected %s, actual %s", expected.FuncName, actual.FuncName)
+		return fmt.Errorf("stacktrace funcname mismatch")
+	}
+
+	// Compare children
+	expectedChildren := make(map[string]*StackTraceNode)
+	actualChildren := make(map[string]*StackTraceNode)
+
+	for _, child := range expected.Children {
+		expectedChildren[child.FuncName] = child
+	}
+	for _, child := range actual.Children {
+		actualChildren[child.FuncName] = child
+	}
+
+	// Check for missing children
+	for name, expectedChild := range expectedChildren {
+		actualChild, found := actualChildren[name]
+		if !found {
+			tf.t.Logf("  ✗ Missing stacktrace child node: %s.%s", expected.FuncName, name)
+			tf.t.Logf("    Actual stacktrace children: %v", sortedNodeNames(actualChildren))
+			return fmt.Errorf("missing stacktrace child node: %s.%s", expected.FuncName, name)
+		}
+
+		// Recursively compare child nodes
+		if err := tf.compareStackTraceNodes(expectedChild, actualChild, allowExtraStackTraceChildren); err != nil {
+			return err
+		}
+	}
+
+	// Check for unexpected children
+	if !allowExtraStackTraceChildren {
+		for name := range actualChildren {
+			if _, found := expectedChildren[name]; !found {
+				tf.t.Logf("  ✗ Unexpected stacktrace child node: %s.%s", expected.FuncName, name)
+				return fmt.Errorf("unexpected stacktrace child node: %s.%s", expected.FuncName, name)
+			}
+		}
+	}
+
+	return nil
+}
+
+func sortedNodeNames[T any](children map[string]T) []string {
 	names := make([]string, 0, len(children))
 	for name := range children {
 		names = append(names, name)
@@ -361,6 +427,11 @@ type MemoryNode struct {
 	Children []*MemoryNode `json:"children,omitempty"` // Child nodes
 }
 
+type StackTraceNode struct {
+	FuncName string            `json:"func_name,omitempty"` // Function name (e.g., "main.main", "runtime.main")
+	Children []*StackTraceNode `json:"children,omitempty"`  // Child nodes representing stack trace hierarchy
+}
+
 // buildMemoryTreeFromNodes builds a memory reference node from goref profile nodes.
 func (tf *TestFramework) buildMemoryTreeFromNodes(nodes map[string]ProfileNodeInterface, stringTable, rootPrefixes []string) *MemoryNode {
 	root := &MemoryNode{Children: []*MemoryNode{}}
@@ -452,6 +523,44 @@ func (tf *TestFramework) createOrUpdateNode(node *MemoryNode, path []string, cou
 
 	node.Children = append(node.Children, child)
 	tf.createOrUpdateNode(child, path[:len(path)-1], count, size)
+}
+
+func (tf *TestFramework) buildStackTraceFromNodes(nodes map[string]ProfileNodeInterface, stringTable []string) *StackTraceNode {
+	root := &StackTraceNode{Children: []*StackTraceNode{}}
+
+	for key := range nodes {
+		nodePath := tf.extractNodePathFromKey(key, stringTable)
+		if nodePath == nil {
+			continue
+		}
+
+		var splitLineIdx int
+		if splitLineIdx = slices.Index(nodePath, gorefproc.StackTraceObjSplitLine); splitLineIdx == -1 {
+			continue
+		}
+		tf.createOrUpdateStackTraceNode(root, nodePath[splitLineIdx+1:len(nodePath)-1])
+	}
+	return root
+}
+
+func (tf *TestFramework) createOrUpdateStackTraceNode(node *StackTraceNode, path []string) {
+	if len(path) == 0 {
+		return
+	}
+	funcName := path[len(path)-1]
+	for _, child := range node.Children {
+		if child.FuncName == funcName {
+			tf.createOrUpdateStackTraceNode(child, path[:len(path)-1])
+			return
+		}
+	}
+	// Create new node
+	child := &StackTraceNode{
+		FuncName: funcName,
+	}
+
+	node.Children = append(node.Children, child)
+	tf.createOrUpdateStackTraceNode(child, path[:len(path)-1])
 }
 
 // extractTypeFromKey extracts name and type information from the key path

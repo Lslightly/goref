@@ -47,6 +47,18 @@ func main() {
 			},
 		},
 	},
+	ExpectedStackTrace: &StackTraceNode{
+		Children: []*StackTraceNode{
+			{
+				FuncName: "runtime.main",
+				Children: []*StackTraceNode{
+					{
+						FuncName: "main.main",
+					},
+				},
+			},
+		},
+	},
 	Timeout: 30 * time.Second,
 }
 
@@ -808,4 +820,82 @@ func main() {
 		},
 	},
 	Timeout: 30 * time.Second,
+}
+
+var StackTraceScenario = TestScenario{
+	Name: "stack trace validation",
+	Code: `package main
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+	"time"
+)
+
+type Node struct {
+	data int
+	next *Node
+}
+
+func bar(ch chan *int, a int) {
+	n := &Node{
+		data: a,
+	}
+	ch <- &n.data
+}
+
+func foo(ch chan *int, a int) {
+	bar(ch, a)
+}
+
+func main() {
+	ch := make(chan *int)
+	go foo(ch, 1)
+	go bar(ch, 2)
+	fmt.Println("READY")
+	fmt.Println(os.Getpid())
+	time.Sleep(100 * time.Second)
+	sum := 0
+	for pa := range ch {
+		sum += *pa
+	}
+	fmt.Println(sum)
+	runtime.KeepAlive(ch)
+}`,
+	Expected: &MemoryNode{
+		Children: []*MemoryNode{
+			{
+				Name: "main.bar.n",
+				Size: ExactValue(32),
+			},
+		},
+	},
+	ExpectedStackTrace: &StackTraceNode{
+		Children: []*StackTraceNode{
+			{
+				FuncName: "main.main.gowrap1",
+				Children: []*StackTraceNode{
+					{
+						FuncName: "main.foo",
+						Children: []*StackTraceNode{
+							{
+								FuncName: "main.bar",
+							},
+						},
+					},
+				},
+			},
+			{
+				FuncName: "main.main.gowrap2",
+				Children: []*StackTraceNode{
+					{
+						FuncName: "main.bar",
+					},
+				},
+			},
+		},
+	},
+	AllowExtraChildren: true,
+	Timeout:            30 * time.Second,
 }
