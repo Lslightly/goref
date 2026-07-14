@@ -11,7 +11,6 @@ package proc
 
 import (
 	"compress/gzip"
-	"fmt"
 	"io"
 	"log"
 
@@ -387,11 +386,7 @@ func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g
 	if len(sf) == 0 {
 		log.Panicf("unable to create pprofIndex for len == 0 stacktrace")
 	}
-	var prev *pprofIndex = &pprofIndex{ // the top frame is Goroutine ID
-		idx:   uint64(b.stringIndex(fmt.Sprintf("G%d", g.ID))),
-		prev:  nil,
-		depth: 0,
-	}
+	var prev *pprofIndex
 	for i := len(sf) - 1; i >= 0; i-- {
 		currentFn := sf[i].Current.Fn
 		cur := prev.pushHead(b, currentFn.Name)
