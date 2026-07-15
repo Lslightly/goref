@@ -596,6 +596,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 		sf, _ := proc.GoroutineStacktrace(t, gr, 1024, 0)
 		s.g.init(Address(lo), Address(hi), s.stackPtrMask(Address(lo), Address(hi), sf))
 		if len(sf) > 0 {
+			sfIndexes := initStackTrace(s.pb, sf)
 			for i := range sf {
 				es := proc.FrameToScope(t, t.Memory(), gr, threadID, sf[i:]...)
 				locals, err := es.Locals(0, "")
@@ -609,7 +610,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 					}
 					l.Name = sf[i].Current.Fn.Name + "." + l.Name
 					rv := ToReferenceVariable(l)
-					s.findRef(rv, createStackTrace(s.pb, sf[i:], t, gr))
+					s.findRef(rv, sfIndexes[i].pushReferenceStackBoundary(s.pb))
 					rvpool.Put(rv)
 				}
 			}

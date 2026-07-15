@@ -12,7 +12,6 @@ package proc
 import (
 	"compress/gzip"
 	"io"
-	"log"
 
 	"github.com/go-delve/delve/pkg/proc"
 )
@@ -220,11 +219,9 @@ type profileBuilder struct {
 	w  io.Writer
 	zw *gzip.Writer
 
-	pb                protobuf
-	strings           []string
-	stringMap         map[string]int
-	funcID            uint64
-	funcNameStrIdxSet map[uint64]bool
+	pb        protobuf
+	strings   []string
+	stringMap map[string]int
 
 	// key: indexes, val: *profileNode
 	nodes map[string]*profileNode
@@ -252,13 +249,11 @@ func (n *profileNode) GetSize() int64 {
 func newProfileBuilder(w io.Writer) *profileBuilder {
 	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
 	b := &profileBuilder{
-		w:                 w,
-		zw:                zw,
-		strings:           []string{""},
-		stringMap:         map[string]int{"": 0},
-		funcID:            5,
-		funcNameStrIdxSet: make(map[uint64]bool),
-		nodes:             make(map[string]*profileNode),
+		w:         w,
+		zw:        zw,
+		strings:   []string{""},
+		stringMap: map[string]int{"": 0},
+		nodes:     make(map[string]*profileNode),
 	}
 	b.pbValueType(tagProfile_SampleType, "inuse_objects", "count")
 	b.pbValueType(tagProfile_SampleType, "inuse_space", "bytes")
@@ -330,22 +325,18 @@ const dummyMappingID = uint64(1)
 
 func (b *profileBuilder) flush() {
 	for i := uint64(5); i < uint64(len(b.strings)); i++ {
-		if _, ok := b.funcNameStrIdxSet[i]; ok {
-			continue
-		}
 		// write location
 		start := b.pb.startMessage()
 		b.pb.uint64Opt(tagLocation_ID, i)
 		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
-		b.pbLine(tagLocation_Line, b.funcID, 0)
+		b.pbLine(tagLocation_Line, i, 0)
 		b.pb.endMessage(tagProfile_Location, start)
 
 		// write function
 		start = b.pb.startMessage()
-		b.pb.uint64Opt(tagFunction_ID, b.funcID)
+		b.pb.uint64Opt(tagFunction_ID, i)
 		b.pb.int64Opt(tagFunction_Name, int64(i))
 		b.pb.endMessage(tagProfile_Function, start)
-		b.funcID++
 	}
 	b.flushReference()
 	// just avoid error msg from pprof tool
@@ -353,25 +344,6 @@ func (b *profileBuilder) flush() {
 	b.pb.strings(tagProfile_StringTable, b.strings)
 	b.zw.Write(b.pb.data)
 	b.zw.Close()
-}
-
-func (b *profileBuilder) pbFunc(name, systemName, fileName string, startLine int64) uint64 {
-	funcID := b.funcID
-	b.funcID++
-	start := b.pb.startMessage()
-	b.pb.uint64Opt(tagFunction_ID, funcID)
-	b.pb.int64Opt(tagFunction_Name, b.stringIndex(name))
-	if systemName != "" {
-		b.pb.int64Opt(tagFunction_SystemName, b.stringIndex(systemName))
-	}
-	if fileName != "" {
-		b.pb.int64Opt(tagFunction_Filename, b.stringIndex(fileName))
-	}
-	if startLine != 0 {
-		b.pb.int64Opt(tagFunction_StartLine, startLine)
-	}
-	b.pb.endMessage(tagProfile_Function, start)
-	return funcID
 }
 
 type pprofIndex struct {
@@ -382,68 +354,40 @@ type pprofIndex struct {
 
 const ReferenceStackBoundary string = "[goref:reference-stack-boundary]"
 
-func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g *proc.G) *pprofIndex {
-	if len(sf) == 0 {
-		log.Panicf("unable to create pprofIndex for len == 0 stacktrace")
-	}
+// initStackTrace create the stackframe pprofIndexes from right(bottom of stack) to left(top of stack) with ReferenceStackBoundary as the new top frame.
+func initStackTrace(b *profileBuilder, sfs []proc.Stackframe) (frameIndexes []*pprofIndex) {
 	var prev *pprofIndex
-	for i := len(sf) - 1; i >= 0; i-- {
-		currentFn := sf[i].Current.Fn
-		cur := prev.pushHead(b, currentFn.Name)
-		idx := cur.idx
-		if _, ok := b.funcNameStrIdxSet[idx]; !ok {
-			// Do following things if function appears for the first time
-			// write function
-			_, startLine, _ := t.BinInfo().PCToLine(currentFn.Entry)
-			funcid := b.pbFunc(currentFn.Name, currentFn.Name, sf[i].Current.File, int64(startLine))
-			var inlinefuncid uint64
-			if sf[i].Inlined {
-				inlinefuncid = b.pbFunc(sf[i].Call.Fn.Name, sf[i].Call.Fn.Name, sf[i].Call.File, tagFunction_StartLine)
-			}
-			// write location
-			start := b.pb.startMessage()
-			b.pb.uint64Opt(tagLocation_ID, idx)
-			b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
-			b.pb.uint64Opt(tagLocation_Address, sf[i].Current.PC)
-			b.pbLine(tagLocation_Line, funcid, int64(sf[i].Current.Line))
-			if sf[i].Inlined {
-				b.pbLine(tagLocation_Line, inlinefuncid, int64(sf[i].Call.Line))
-			}
-			b.pb.endMessage(tagProfile_Location, start)
-			b.funcNameStrIdxSet[idx] = true
-		}
-		prev = cur
+	frameIndexes = make([]*pprofIndex, len(sfs))
+	for i := len(sfs) - 1; i >= 0; i-- {
+		prev = newHeadWithDepth(b, prev, sfs[i].Current.Fn.Name, -1)
+		frameIndexes[i] = prev
 	}
-	// add stk_obj_split to separate the stack trace of object reference from the stack trace of goroutine
-	prev = prev.pushHead(b, ReferenceStackBoundary)
-	idx := prev.idx
-	if _, ok := b.funcNameStrIdxSet[idx]; !ok {
-		funcid := b.pbFunc(ReferenceStackBoundary, ReferenceStackBoundary, "", 0)
-		start := b.pb.startMessage()
-		b.pb.uint64Opt(tagLocation_ID, idx)
-		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
-		b.pbLine(tagLocation_Line, funcid, 0)
-		b.pb.endMessage(tagProfile_Location, start)
-		b.funcNameStrIdxSet[idx] = true
-	}
-	return prev
+	return
+}
+
+func (i *pprofIndex) pushReferenceStackBoundary(pb *profileBuilder) *pprofIndex {
+	return newHeadWithDepth(pb, i, ReferenceStackBoundary, -1)
 }
 
 func (i *pprofIndex) pushHead(pb *profileBuilder, name string) *pprofIndex {
-	if name == "" {
-		return i
-	}
-	idx := uint64(pb.stringIndex(name))
-	pi := &pprofIndex{
-		prev: i,
-		idx:  idx,
-	}
+	var depth int
 	if i == nil {
-		pi.depth = 0
+		depth = 0
 	} else {
-		pi.depth = i.depth + 1
+		depth = i.depth + 1
 	}
-	return pi
+	return newHeadWithDepth(pb, i, name, depth)
+}
+
+func newHeadWithDepth(pb *profileBuilder, prev *pprofIndex, name string, depth int) *pprofIndex {
+	if name == "" {
+		return prev
+	}
+	return &pprofIndex{
+		prev:  prev,
+		idx:   uint64(pb.stringIndex(name)),
+		depth: depth,
+	}
 }
 
 func (i *pprofIndex) indexes() (res []uint64) {
