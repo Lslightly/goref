@@ -352,6 +352,8 @@ type pprofIndex struct {
 	depth int
 }
 
+const stackTracePprofIndexDepth int = -1
+
 const ReferenceStackBoundary string = "[goref:reference-stack-boundary]"
 
 // initStackTrace create the stackframe pprofIndexes from right(bottom of stack) to left(top of stack) with ReferenceStackBoundary as the new top frame.
@@ -359,14 +361,14 @@ func initStackTrace(b *profileBuilder, sfs []proc.Stackframe) (frameIndexes []*p
 	var prev *pprofIndex
 	frameIndexes = make([]*pprofIndex, len(sfs))
 	for i := len(sfs) - 1; i >= 0; i-- {
-		prev = newHeadWithDepth(b, prev, sfs[i].Current.Fn.Name, -1)
+		prev = newHeadWithDepth(b, prev, sfs[i].Current.Fn.Name, stackTracePprofIndexDepth)
 		frameIndexes[i] = prev
 	}
 	return
 }
 
 func (i *pprofIndex) pushReferenceStackBoundary(pb *profileBuilder) *pprofIndex {
-	return newHeadWithDepth(pb, i, ReferenceStackBoundary, -1)
+	return newHeadWithDepth(pb, i, ReferenceStackBoundary, stackTracePprofIndexDepth)
 }
 
 func (i *pprofIndex) pushHead(pb *profileBuilder, name string) *pprofIndex {
