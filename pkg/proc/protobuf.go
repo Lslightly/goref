@@ -380,7 +380,7 @@ type pprofIndex struct {
 	depth int
 }
 
-const StackTraceObjSplitLine string = "stk_obj_split"
+const ReferenceStackBoundary string = "[goref:reference-stack-boundary]"
 
 func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g *proc.G) *pprofIndex {
 	if len(sf) == 0 {
@@ -415,10 +415,10 @@ func createStackTrace(b *profileBuilder, sf []proc.Stackframe, t *proc.Target, g
 		prev = cur
 	}
 	// add stk_obj_split to separate the stack trace of object reference from the stack trace of goroutine
-	prev = prev.pushHead(b, StackTraceObjSplitLine)
+	prev = prev.pushHead(b, ReferenceStackBoundary)
 	idx := prev.idx
 	if _, ok := b.funcNameStrIdxSet[idx]; !ok {
-		funcid := b.pbFunc(StackTraceObjSplitLine, StackTraceObjSplitLine, "", 0)
+		funcid := b.pbFunc(ReferenceStackBoundary, ReferenceStackBoundary, "", 0)
 		start := b.pb.startMessage()
 		b.pb.uint64Opt(tagLocation_ID, idx)
 		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)

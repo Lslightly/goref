@@ -450,7 +450,7 @@ func (tf *TestFramework) buildMemoryTreeFromNodes(nodes map[string]ProfileNodeIn
 
 		leafIdx := len(nodePath) - 1
 		// omit stacktrace if exists, and use the last node before the stacktrace as the leaf node
-		if idx := slices.Index(nodePath, gorefproc.StackTraceObjSplitLine); idx != -1 {
+		if idx := slices.Index(nodePath, gorefproc.ReferenceStackBoundary); idx != -1 {
 			leafIdx = idx - 1
 		}
 		leaf := nodePath[leafIdx]
@@ -535,7 +535,7 @@ func (tf *TestFramework) buildStackTraceFromNodes(nodes map[string]ProfileNodeIn
 		}
 
 		var splitLineIdx int
-		if splitLineIdx = slices.Index(nodePath, gorefproc.StackTraceObjSplitLine); splitLineIdx == -1 {
+		if splitLineIdx = slices.Index(nodePath, gorefproc.ReferenceStackBoundary); splitLineIdx == -1 {
 			continue
 		}
 		tf.createOrUpdateStackTraceNode(root, nodePath[splitLineIdx+1:len(nodePath)-1])
