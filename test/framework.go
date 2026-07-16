@@ -45,8 +45,6 @@ type TestScenario struct {
 	// AllowExtraChildren relaxes strict tree matching by allowing actual nodes
 	// to have children not listed in Expected.
 	AllowExtraChildren bool
-	// MatchStackTraceExactly enforces strict stack trace matching, requiring the actual stack trace to match the expected one exactly.
-	MatchStackTraceExactly bool
 }
 
 // TestFramework manages integration test execution
