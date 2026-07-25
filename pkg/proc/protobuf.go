@@ -356,12 +356,23 @@ const stackTracePprofIndexDepth int = -1
 
 const ReferenceStackBoundary string = "[goref:reference-stack-boundary]"
 
+// getStackFrameFuncName returns the function name of the stack frame. If the function is nil, it returns "<unknown>".
+func getStackFrameFuncName(sf proc.Stackframe) string {
+	if sf.Call.Fn != nil {
+		return sf.Call.Fn.Name
+	}
+	if sf.Current.Fn != nil {
+		return sf.Current.Fn.Name
+	}
+	return "<unknown>"
+}
+
 // initStackTrace create the stackframe pprofIndexes from right(bottom of stack) to left(top of stack) with ReferenceStackBoundary as the new top frame.
 func initStackTrace(b *profileBuilder, sfs []proc.Stackframe) (frameIndexes []*pprofIndex) {
 	var prev *pprofIndex
 	frameIndexes = make([]*pprofIndex, len(sfs))
 	for i := len(sfs) - 1; i >= 0; i-- {
-		prev = newHeadWithDepth(b, prev, sfs[i].Current.Fn.Name, stackTracePprofIndexDepth)
+		prev = newHeadWithDepth(b, prev, getStackFrameFuncName(sfs[i]), stackTracePprofIndexDepth)
 		frameIndexes[i] = prev
 	}
 	return

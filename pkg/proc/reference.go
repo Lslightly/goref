@@ -608,7 +608,7 @@ func ObjectReference(t *proc.Target, filename string) (*ObjRefScope, error) {
 					if l.Addr == 0 {
 						continue
 					}
-					l.Name = sf[i].Current.Fn.Name + "." + l.Name
+					l.Name = getStackFrameFuncName(sf[i]) + "." + l.Name
 					rv := ToReferenceVariable(l)
 					s.findRef(rv, sfIndexes[i].pushReferenceStackBoundary(s.pb))
 					rvpool.Put(rv)
