@@ -321,14 +321,11 @@ func (b *profileBuilder) pbMapping(tag int, id, base, limit, offset uint64, file
 	b.pb.endMessage(tag, start)
 }
 
-const dummyMappingID = uint64(1)
-
 func (b *profileBuilder) flush() {
 	for i := uint64(5); i < uint64(len(b.strings)); i++ {
 		// write location
 		start := b.pb.startMessage()
 		b.pb.uint64Opt(tagLocation_ID, i)
-		b.pb.uint64Opt(tagLocation_MappingID, dummyMappingID)
 		b.pbLine(tagLocation_Line, i, 0)
 		b.pb.endMessage(tagProfile_Location, start)
 
@@ -340,7 +337,7 @@ func (b *profileBuilder) flush() {
 	}
 	b.flushReference()
 	// just avoid error msg from pprof tool
-	b.pbMapping(tagProfile_Mapping, dummyMappingID, uint64(0), uint64(0xff), 0, "", "", false)
+	b.pbMapping(tagProfile_Mapping, 1, uint64(0), uint64(0xff), 0, "", "", false)
 	b.pb.strings(tagProfile_StringTable, b.strings)
 	b.zw.Write(b.pb.data)
 	b.zw.Close()
