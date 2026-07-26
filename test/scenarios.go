@@ -47,13 +47,17 @@ func main() {
 			},
 		},
 	},
-	ExpectedStackTrace: &StackTraceNode{
-		Children: []*StackTraceNode{
+	ExpectedStackSample: &StackSampleNode{
+		Children: []*StackSampleNode{
 			{
 				FuncName: "runtime.main",
-				Children: []*StackTraceNode{
+				Count:    ExactValue(2),
+				Size:     ExactValue(80),
+				Children: []*StackSampleNode{
 					{
 						FuncName: "main.main",
+						Count:    ExactValue(2),
+						Size:     ExactValue(80),
 					},
 				},
 			},
@@ -851,7 +855,9 @@ func foo(ch chan *int, a int) {
 
 func main() {
 	ch := make(chan *int)
-	go foo(ch, 1)
+	for i := 0; i < 2; i++ {
+		go foo(ch, 1)
+	}
 	go bar(ch, 2)
 	fmt.Println("READY")
 	fmt.Println(os.Getpid())
@@ -867,20 +873,26 @@ func main() {
 		Children: []*MemoryNode{
 			{
 				Name: "main.bar.n",
-				Size: ExactValue(32),
+				Size: ExactValue(48),
 			},
 		},
 	},
-	ExpectedStackTrace: &StackTraceNode{
-		Children: []*StackTraceNode{
+	ExpectedStackSample: &StackSampleNode{
+		Children: []*StackSampleNode{
 			{
 				FuncName: "main.main.gowrap1",
-				Children: []*StackTraceNode{
+				Count:    ExactValue(2),
+				Size:     ExactValue(32),
+				Children: []*StackSampleNode{
 					{
 						FuncName: "main.foo",
-						Children: []*StackTraceNode{
+						Count:    ExactValue(2),
+						Size:     ExactValue(32),
+						Children: []*StackSampleNode{
 							{
 								FuncName: "main.bar",
+								Count:    ExactValue(2),
+								Size:     ExactValue(32),
 							},
 						},
 					},
@@ -888,9 +900,13 @@ func main() {
 			},
 			{
 				FuncName: "main.main.gowrap2",
-				Children: []*StackTraceNode{
+				Count:    ExactValue(1),
+				Size:     ExactValue(16),
+				Children: []*StackSampleNode{
 					{
 						FuncName: "main.bar",
+						Count:    ExactValue(1),
+						Size:     ExactValue(16),
 					},
 				},
 			},
